@@ -1,0 +1,17 @@
+# Web interface and interactive app
+streamlit
+
+# PDF extraction library (imported as fitz)
+PyMuPDF
+
+# Local vector search index
+faiss-cpu
+
+# Local sentence embedding models from Hugging Face
+sentence-transformers
+
+# Numeric computations for FAISS vectors
+numpy
+
+# HTTP requests to query local Ollama LLM
+requests
