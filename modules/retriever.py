@@ -13,8 +13,8 @@ def retrieve_chunks(
     )
 
     results = []
-
     for idx in indices[0]:
-        results.append(chunks[idx])
+        if 0 <= idx < len(chunks):
+            results.append(chunks[idx])
 
     return results

@@ -52,8 +52,9 @@ if uploaded_file is not None:
                 text
             )
 
+            chunk_texts = [c["text"] for c in chunks]
             embeddings = generate_embeddings(
-                chunks
+                chunk_texts
             )
 
             index = create_faiss_index(
@@ -80,7 +81,7 @@ if uploaded_file is not None:
                 "Generating answer..."
             ):
 
-                answer = ask_question(
+                result = ask_question(
                     question,
                     st.session_state.chunks,
                     st.session_state.index
@@ -91,7 +92,12 @@ if uploaded_file is not None:
             )
 
             st.write(
-                answer
+                result["answer"]
+            )
+
+            st.divider()
+            st.caption(
+                f"**Sources Referenced:** {result['source_label']}"
             )
 
         else:

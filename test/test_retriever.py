@@ -18,18 +18,20 @@ from modules.retriever import retrieve_chunks
 
 pdf_path = "data/pdfs/sample.pdf"
 
-text = extract_text(pdf_path)
+pages = extract_text(pdf_path)
 
-chunks = create_chunks(text)
+chunks = create_chunks(pages)
 
-embeddings = generate_embeddings(chunks)
+chunk_texts = [c["text"] for c in chunks]
+embeddings = generate_embeddings(chunk_texts)
 
 index = create_faiss_index(embeddings)
 
 question = "What are the advantages of AI?"
 
 question_embedding = generate_embeddings(
-    [question]
+    [question],
+    is_query=True
 )[0]
 
 results = retrieve_chunks(
@@ -47,4 +49,5 @@ print("=" * 50)
 for i, chunk in enumerate(results):
     print(f"\nResult {i+1}")
     print("-" * 50)
-    print(chunk)
+    print(f"Source Pages: {chunk['page_numbers']}")
+    print(chunk['text'])

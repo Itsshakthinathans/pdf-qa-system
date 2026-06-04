@@ -16,11 +16,12 @@ from modules.embeddings import generate_embeddings
 
 pdf_path = "data/pdfs/sample.pdf"
 
-text = extract_text(pdf_path)
+pages = extract_text(pdf_path)
 
-chunks = create_chunks(text)
+chunks = create_chunks(pages)
 
-embeddings = generate_embeddings(chunks)
+chunk_texts = [c["text"] for c in chunks]
+embeddings = generate_embeddings(chunk_texts)
 
 print("Total Chunks:", len(chunks))
 print("Total Embeddings:", len(embeddings))

@@ -16,7 +16,7 @@ pdf_path = "data/pdfs/sample.pdf"
 
 question = "What is reinforcement learning?"
 
-answer = ask_pdf_question(
+result = ask_pdf_question(
     pdf_path,
     question
 )
@@ -26,4 +26,8 @@ print(question)
 
 print("\nANSWER:")
 print("=" * 50)
-print(answer)
+print(result["answer"])
+
+print("\nSOURCES:")
+print("=" * 50)
+print(result["source_label"])

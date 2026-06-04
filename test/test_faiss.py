@@ -17,11 +17,12 @@ from modules.vector_store import create_faiss_index
 
 pdf_path = "data/pdfs/sample.pdf"
 
-text = extract_text(pdf_path)
+pages = extract_text(pdf_path)
 
-chunks = create_chunks(text)
+chunks = create_chunks(pages)
 
-embeddings = generate_embeddings(chunks)
+chunk_texts = [c["text"] for c in chunks]
+embeddings = generate_embeddings(chunk_texts)
 
 index = create_faiss_index(embeddings)
 

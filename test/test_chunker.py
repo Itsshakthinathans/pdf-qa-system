@@ -8,9 +8,9 @@ from modules.chunker import create_chunks
 
 pdf_path = "data/pdfs/sample.pdf"
 
-text = extract_text(pdf_path)
+pages = extract_text(pdf_path)
 
-chunks = create_chunks(text)
+chunks = create_chunks(pages)
 
 print("=" * 50)
 print("TOTAL CHUNKS:", len(chunks))
@@ -19,4 +19,5 @@ print("=" * 50)
 for i, chunk in enumerate(chunks):
     print(f"\nCHUNK {i + 1}")
     print("-" * 50)
-    print(chunk)
+    print(f"Source Pages: {chunk['page_numbers']}")
+    print(chunk['text'])

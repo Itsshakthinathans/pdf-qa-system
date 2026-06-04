@@ -1,0 +1,775 @@
+PDF_QA_DeepSeek/
+│
+├── .gitignore
+├── .streamlit/
+│   └── config.toml
+├── LICENSE
+├── README.md
+├── app.py
+├── qa_pipeline.py
+├── requirements.txt
+├── modules/
+│   ├── __init__.py
+│   ├── chunker.py
+│   ├── embeddings.py
+│   ├── llm.py
+│   ├── pdf_loader.py
+│   ├── retriever.py
+│   └── vector_store.py
+└── test/
+    ├── test_chunker.py
+    ├── test_embeddings.py
+    ├── test_faiss.py
+    ├── test_llm.py
+    ├── test_pdf_loader.py
+    ├── test_pipeline.py
+    └── test_retriever.py
+
+==================================================
+FILE: .streamlit/config.toml
+==============================
+[server]
+fileWatcherType = "none"
+
+==================================================
+FILE: requirements.txt
+==============================
+# Web interface and interactive app
+streamlit
+
+# PDF extraction library (imported as fitz)
+PyMuPDF
+
+# Local vector search index
+faiss-cpu
+
+# Local sentence embedding models from Hugging Face
+sentence-transformers
+
+# Numeric computations for FAISS vectors
+numpy
+
+# HTTP requests to query local Ollama LLM
+requests
+
+
+==================================================
+FILE: app.py
+==============================
+import streamlit as st
+import tempfile
+
+from modules.pdf_loader import extract_text
+from modules.chunker import create_chunks
+from modules.embeddings import generate_embeddings
+from modules.vector_store import create_faiss_index
+
+from qa_pipeline import ask_question
+
+st.set_page_config(
+    page_title="PDF QA System",
+    layout="wide"
+)
+
+st.title("📄 PDF Question Answering System")
+
+uploaded_file = st.file_uploader(
+    "Upload a PDF",
+    type=["pdf"]
+)
+
+if uploaded_file is not None:
+
+    # Process PDF only once
+    if (
+        "index" not in st.session_state
+        or
+        st.session_state.get("pdf_name") != uploaded_file.name
+    ):
+
+        with st.spinner(
+            "Processing PDF..."
+        ):
+
+            with tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=".pdf"
+            ) as temp_file:
+
+                temp_file.write(
+                    uploaded_file.read()
+                )
+
+                pdf_path = temp_file.name
+
+            text = extract_text(
+                pdf_path
+            )
+
+            chunks = create_chunks(
+                text
+            )
+
+            chunk_texts = [c["text"] for c in chunks]
+            embeddings = generate_embeddings(
+                chunk_texts
+            )
+
+            index = create_faiss_index(
+                embeddings
+            )
+
+            st.session_state.chunks = chunks
+            st.session_state.index = index
+            st.session_state.pdf_name = uploaded_file.name
+
+        st.success(
+            "PDF processed successfully!"
+        )
+
+    question = st.text_input(
+        "Enter your question:"
+    )
+
+    if st.button("Ask"):
+
+        if question:
+
+            with st.spinner(
+                "Generating answer..."
+            ):
+
+                result = ask_question(
+                    question,
+                    st.session_state.chunks,
+                    st.session_state.index
+                )
+
+            st.subheader(
+                "Answer"
+            )
+
+            st.write(
+                result["answer"]
+            )
+
+            st.divider()
+            st.caption(
+                f"**Sources Referenced:** {result['source_label']}"
+            )
+
+        else:
+
+            st.warning(
+                "Please enter a question."
+            )
+
+==================================================
+FILE: qa_pipeline.py
+==============================
+from modules.retriever import retrieve_chunks
+from modules.embeddings import generate_embeddings
+from modules.llm import generate_answer
+
+import time
+
+
+def ask_question(question, chunks, index):
+
+    start = time.time()
+
+    # Pass is_query=True to prep the question for BGE
+    question_embedding = generate_embeddings(
+        [question],
+        is_query=True
+    )[0]
+
+    print(
+        "Question Embedding Time:",
+        round(time.time() - start, 2),
+        "seconds"
+    )
+
+    start = time.time()
+
+    relevant_chunks = retrieve_chunks(
+        question_embedding,
+        index,
+        chunks,
+        top_k=3
+    )
+
+    print(
+        "Retrieval Time:",
+        round(time.time() - start, 2),
+        "seconds"
+    )
+
+    # Format the context to include page number annotations
+    context_parts = []
+    unique_pages = set()
+    for chunk in relevant_chunks:
+        text = chunk["text"]
+        pages = chunk["page_numbers"]
+        unique_pages.update(pages)
+        pages_str = ", ".join(map(str, pages))
+        context_parts.append(f"[Source Page(s): {pages_str}]\n{text}")
+
+    context = "\n\n".join(context_parts)
+    sorted_pages = sorted(list(unique_pages))
+    
+    print("Retrieved Chunks:", len(relevant_chunks))
+    print("Context Length:", len(context))
+
+    prompt = f"""You are a precise PDF Question Answering Assistant.
+
+Analyze the provided Context (which includes Page Numbers) to answer the user's Question.
+
+CRITICAL INSTRUCTIONS:
+1. Base your answer ONLY on the provided Context. Do NOT use any external knowledge.
+2. For every fact, claim, or piece of information you retrieve, cite the exact source page(s) using the format [Page X] or [Pages X, Y] inline immediately after the statement (e.g., "...this process takes five minutes [Page 2].").
+3. Do NOT make up any citations. Only use the page numbers explicitly stated in the context.
+4. If the answer cannot be fully found in the context, or if the context is insufficient, reply exactly:
+"The answer is not available in the uploaded PDF."
+5. Do NOT say "Based on the context..." or "According to the provided document..." at the beginning. Just answer directly and include the citations.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+
+    start = time.time()
+
+    answer = generate_answer(prompt)
+
+    print(
+        "DeepSeek Time:",
+        round(time.time() - start, 2),
+        "seconds"
+    )
+
+    return {
+        "answer": answer.strip(),
+        "sources": sorted_pages,
+        "source_label": f"Pages: {', '.join(map(str, sorted_pages))}" if sorted_pages else "Unknown"
+    }
+
+
+def ask_pdf_question(pdf_path, question):
+    """
+    End-to-end question answering pipeline for a local PDF file.
+    
+    Parameters:
+        pdf_path (str): Path to the PDF file.
+        question (str): User query.
+        
+    Returns:
+        dict: Generated answer dictionary with answer, sources, and source_label.
+    """
+    from modules.pdf_loader import extract_text
+    from modules.chunker import create_chunks
+    from modules.vector_store import create_faiss_index
+
+    # 1. Extract text from PDF
+    text = extract_text(pdf_path)
+    
+    # 2. Chunk text
+    chunks = create_chunks(text)
+    
+    # 3. Generate embeddings (extract texts from dict list)
+    chunk_texts = [c["text"] for c in chunks]
+    embeddings = generate_embeddings(chunk_texts)
+    
+    # 4. Index embeddings with FAISS
+    index = create_faiss_index(embeddings)
+    
+    # 5. Ask question
+    return ask_question(question, chunks, index)
+
+
+==================================================
+FILE: modules/chunker.py
+==============================
+def create_chunks(pages, chunk_size=1000, overlap=200):
+    """
+    Split page-annotated text into overlapping chunks using hierarchical separators.
+
+    Parameters:
+        pages (list[dict] or str): Page dicts with text and page_number, or raw string.
+        chunk_size (int): Max size of each chunk.
+        overlap (int): Overlap size.
+
+    Returns:
+        list[dict]: List of chunks with 'text' and 'page_numbers'.
+    """
+    if isinstance(pages, str):
+        pages = [{"text": pages, "page_number": 1}]
+
+    full_text = ""
+    page_offsets = []
+
+    for p in pages:
+        page_text = p.get("text", "")
+        page_num = p.get("page_number", 1)
+        start_offset = len(full_text)
+        full_text += page_text + "\n"
+        end_offset = len(full_text)
+        page_offsets.append((start_offset, end_offset, page_num))
+
+    separators = ["\n\n", "\n", ". ", " ", ""]
+
+    def get_joined_len(doc_list, sep):
+        if not doc_list:
+            return 0
+        return sum(len(p[0]) for p in doc_list) + len(sep) * (len(doc_list) - 1)
+
+    def _split_text(text: str, separators: list[str]) -> list[tuple[str, int]]:
+        if len(text) <= chunk_size or not separators:
+            return [(text, 0)]
+
+        separator = separators[0]
+        next_separators = separators[1:]
+
+        splits = []
+        if separator == "":
+            splits = [(c, i) for i, c in enumerate(text)]
+        else:
+            parts = text.split(separator)
+            curr = 0
+            for part in parts:
+                splits.append((part, curr))
+                curr += len(part) + len(separator)
+
+        good_splits = []
+        for part, part_offset in splits:
+            if len(part) > chunk_size:
+                sub_splits = _split_text(part, next_separators)
+                for sub_part, sub_offset in sub_splits:
+                    good_splits.append((sub_part, part_offset + sub_offset))
+            else:
+                good_splits.append((part, part_offset))
+
+        chunks = []
+        current_doc = []
+
+        for part, part_offset in good_splits:
+            if not part.strip():
+                continue
+
+            sep_to_use = separator
+
+            test_doc = current_doc + [(part, part_offset)]
+            test_len = get_joined_len(test_doc, sep_to_use)
+
+            if current_doc and test_len > chunk_size:
+                chunk_text = sep_to_use.join([p[0] for p in current_doc])
+                chunk_start = current_doc[0][1]
+                chunks.append((chunk_text, chunk_start))
+
+                while current_doc:
+                    current_doc.pop(0)
+                    temp_doc = current_doc + [(part, part_offset)]
+                    if get_joined_len(temp_doc, sep_to_use) <= chunk_size and get_joined_len(current_doc, sep_to_use) <= overlap:
+                        break
+
+            current_doc.append((part, part_offset))
+
+        if current_doc:
+            chunk_text = sep_to_use.join([p[0] for p in current_doc])
+            chunk_start = current_doc[0][1]
+            chunks.append((chunk_text, chunk_start))
+
+        return chunks
+
+    raw_chunks = _split_text(full_text, separators)
+
+    result_chunks = []
+    for chunk_text, chunk_start in raw_chunks:
+        chunk_end = chunk_start + len(chunk_text)
+        
+        chunk_pages = []
+        for start, end, page_num in page_offsets:
+            if max(start, chunk_start) < min(end, chunk_end):
+                chunk_pages.append(page_num)
+                
+        if not chunk_pages:
+            for start, end, page_num in page_offsets:
+                if start <= chunk_start <= end:
+                    chunk_pages = [page_num]
+                    break
+            if not chunk_pages:
+                chunk_pages = [page_offsets[0][2]] if page_offsets else [1]
+                
+        result_chunks.append({
+            "text": chunk_text,
+            "page_numbers": sorted(list(set(chunk_pages)))
+        })
+
+    return result_chunks
+
+==================================================
+FILE: modules/embeddings.py
+==============================
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+
+def generate_embeddings(chunks, is_query=False):
+    if isinstance(chunks, str):
+        processed = f"Represent this sentence for searching relevant passages: {chunks}" if is_query else chunks
+    else:
+        processed = [f"Represent this sentence for searching relevant passages: {c}" for c in chunks] if is_query else chunks
+
+    embeddings = model.encode(processed, normalize_embeddings=True)
+    return embeddings
+
+==================================================
+FILE: modules/llm.py
+==============================
+import requests
+
+OLLAMA_URL = "http://localhost:11434/api/generate"
+
+MODEL_NAME = "deepseek-r1:7b"
+# MODEL_NAME = "deepseek-r1:1.5b"
+
+def generate_answer(prompt):
+    print("Using Model:", MODEL_NAME)
+    payload = {
+    "model": MODEL_NAME,
+    "prompt": prompt,
+    "stream": False,
+    }
+
+    response = requests.post(
+        OLLAMA_URL,
+        json=payload
+    )
+
+    result = response.json()
+    # print(result)
+    return result["response"]
+
+==================================================
+FILE: modules/pdf_loader.py
+==============================
+import fitz
+
+
+def extract_text(pdf_path):
+    pages = []
+
+    pdf_document = fitz.open(pdf_path)
+
+    for page in pdf_document:
+        text = page.get_text()
+        if text.strip():
+            pages.append({
+                "text": text,
+                "page_number": page.number + 1
+            })
+
+    pdf_document.close()
+
+    return pages
+
+==================================================
+FILE: modules/retriever.py
+==============================
+import numpy as np
+
+def retrieve_chunks(
+        question_embedding,
+        index,
+        chunks,
+        top_k=2
+):
+
+    distances, indices = index.search(
+        np.array([question_embedding]).astype("float32"),
+        top_k
+    )
+
+    results = []
+    for idx in indices[0]:
+        if 0 <= idx < len(chunks):
+            results.append(chunks[idx])
+
+    return results
+
+==================================================
+FILE: modules/vector_store.py
+==============================
+import faiss
+import numpy as np
+
+def create_faiss_index(embeddings):
+
+    dimension = embeddings.shape[1]
+
+    index = faiss.IndexFlatL2(dimension)
+
+    index.add(
+        np.array(embeddings).astype("float32")
+    )
+
+    return index
+
+==================================================
+FILE: test/test_chunker.py
+==============================
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from modules.pdf_loader import extract_text
+from modules.chunker import create_chunks
+
+pdf_path = "data/pdfs/sample.pdf"
+
+pages = extract_text(pdf_path)
+
+chunks = create_chunks(pages)
+
+print("=" * 50)
+print("TOTAL CHUNKS:", len(chunks))
+print("=" * 50)
+
+for i, chunk in enumerate(chunks):
+    print(f"\nCHUNK {i + 1}")
+    print("-" * 50)
+    print(f"Source Pages: {chunk['page_numbers']}")
+    print(chunk['text'])
+
+==================================================
+FILE: test/test_embeddings.py
+==============================
+import sys
+import os
+
+sys.path.append(
+    os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            ".."
+        )
+    )
+)
+
+from modules.pdf_loader import extract_text
+from modules.chunker import create_chunks
+from modules.embeddings import generate_embeddings
+
+pdf_path = "data/pdfs/sample.pdf"
+
+pages = extract_text(pdf_path)
+
+chunks = create_chunks(pages)
+
+chunk_texts = [c["text"] for c in chunks]
+embeddings = generate_embeddings(chunk_texts)
+
+print("Total Chunks:", len(chunks))
+print("Total Embeddings:", len(embeddings))
+
+print("\nEmbedding Shape:")
+print(embeddings.shape)
+
+print("\nFirst Embedding:")
+print(embeddings[0])
+
+==================================================
+FILE: test/test_faiss.py
+==============================
+import sys
+import os
+
+sys.path.append(
+    os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            ".."
+        )
+    )
+)
+
+from modules.pdf_loader import extract_text
+from modules.chunker import create_chunks
+from modules.embeddings import generate_embeddings
+from modules.vector_store import create_faiss_index
+
+pdf_path = "data/pdfs/sample.pdf"
+
+pages = extract_text(pdf_path)
+
+chunks = create_chunks(pages)
+
+chunk_texts = [c["text"] for c in chunks]
+embeddings = generate_embeddings(chunk_texts)
+
+index = create_faiss_index(embeddings)
+
+print("Chunks:", len(chunks))
+print("Embeddings:", len(embeddings))
+print("Vectors Stored:", index.ntotal)
+
+==================================================
+FILE: test/test_llm.py
+==============================
+import sys
+import os
+
+sys.path.append(
+    os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            ".."
+        )
+    )
+)
+
+from modules.llm import generate_answer
+
+question = """
+Explain Artificial Intelligence in simple terms.
+"""
+
+answer = generate_answer(question)
+
+print("\nQUESTION:")
+print(question)
+
+print("\nANSWER:")
+print("=" * 50)
+print(answer)
+
+==================================================
+FILE: test/test_pdf_loader.py
+==============================
+import sys
+import os
+
+# Add project root to Python path
+sys.path.append(
+    os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..")
+    )
+)
+
+from modules.pdf_loader import extract_text
+
+pdf_path = "data/pdfs/sample.pdf"
+
+pages = extract_text(pdf_path)
+
+print("=" * 50)
+print("PDF CONTENT (Pages)")
+print("=" * 50)
+
+print(f"Extracted {len(pages)} page(s).")
+if pages:
+    first_page = pages[0]
+    print(f"Page Number: {first_page['page_number']}")
+    print(f"Text Content Snippet:\n{first_page['text'][:500]}...")
+
+print("\nVerification Passed: extract_text returned list of dicts with page metadata.")
+
+==================================================
+FILE: test/test_pipeline.py
+==============================
+import sys
+import os
+
+sys.path.append(
+    os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            ".."
+        )
+    )
+)
+
+from qa_pipeline import ask_pdf_question
+
+pdf_path = "data/pdfs/sample.pdf"
+
+question = "What is reinforcement learning?"
+
+result = ask_pdf_question(
+    pdf_path,
+    question
+)
+
+print("\nQUESTION:")
+print(question)
+
+print("\nANSWER:")
+print("=" * 50)
+print(result["answer"])
+
+print("\nSOURCES:")
+print("=" * 50)
+print(result["source_label"])
+
+==================================================
+FILE: test/test_retriever.py
+==============================
+import sys
+import os
+
+sys.path.append(
+    os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            ".."
+        )
+    )
+)
+
+from modules.pdf_loader import extract_text
+from modules.chunker import create_chunks
+from modules.embeddings import generate_embeddings
+from modules.vector_store import create_faiss_index
+from modules.retriever import retrieve_chunks
+
+pdf_path = "data/pdfs/sample.pdf"
+
+pages = extract_text(pdf_path)
+
+chunks = create_chunks(pages)
+
+chunk_texts = [c["text"] for c in chunks]
+embeddings = generate_embeddings(chunk_texts)
+
+index = create_faiss_index(embeddings)
+
+question = "What are the advantages of AI?"
+
+question_embedding = generate_embeddings(
+    [question],
+    is_query=True
+)[0]
+
+results = retrieve_chunks(
+    question_embedding,
+    index,
+    chunks
+)
+
+print("\nQuestion:")
+print(question)
+
+print("\nRetrieved Chunks:")
+print("=" * 50)
+
+for i, chunk in enumerate(results):
+    print(f"\nResult {i+1}")
+    print("-" * 50)
+    print(f"Source Pages: {chunk['page_numbers']}")
+    print(chunk['text'])
+
