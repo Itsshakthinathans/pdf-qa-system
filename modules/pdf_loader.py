@@ -7,7 +7,7 @@ def extract_text(pdf_path):
     pdf_document = fitz.open(pdf_path)
 
     for page in pdf_document:
-        text = page.get_text()
+        text = page.get_text(sort=True)
         if text.strip():
             pages.append({
                 "text": text,

@@ -63,6 +63,7 @@ CRITICAL INSTRUCTIONS:
 4. If the answer cannot be fully found in the context, or if the context is insufficient, reply exactly:
 "The answer is not available in the uploaded PDF."
 5. Do NOT say "Based on the context..." or "According to the provided document..." at the beginning. Just answer directly and include the citations.
+6. Pay extremely close attention to the structural layout of tables, lists, and forms. Do not assume, stretch, or propagate values (like degree names, dates, or marks) from one row or entry to another. Correctly map columns to their respective rows.
 
 Context:
 {context}
