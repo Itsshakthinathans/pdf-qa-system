@@ -8,8 +8,8 @@ def list_to_markdown_table(rows):
     for row in rows:
         cleaned_row = []
         for cell in row:
-            if cell is None:
-                cleaned_row.append("")
+            if cell is None or not cell.strip():
+                cleaned_row.append("-")
             else:
                 cleaned_row.append(cell.replace("\n", " ").strip())
         cleaned_rows.append(cleaned_row)
@@ -19,7 +19,7 @@ def list_to_markdown_table(rows):
     markdown += "| " + " | ".join(["---"] * len(header)) + " |\n"
     for row in body:
         if len(row) < len(header):
-            row += [""] * (len(header) - len(row))
+            row += ["-"] * (len(header) - len(row))
         markdown += "| " + " | ".join(row[:len(header)]) + " |\n"
     return markdown
 
