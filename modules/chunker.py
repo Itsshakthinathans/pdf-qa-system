@@ -13,17 +13,6 @@ def create_chunks(pages, chunk_size=1000, overlap=200):
     if isinstance(pages, str):
         pages = [{"text": pages, "page_number": 1}]
 
-    full_text = ""
-    page_offsets = []
-
-    for p in pages:
-        page_text = p.get("text", "")
-        page_num = p.get("page_number", 1)
-        start_offset = len(full_text)
-        full_text += page_text + "\n"
-        end_offset = len(full_text)
-        page_offsets.append((start_offset, end_offset, page_num))
-
     separators = ["\n\n", "\n", ". ", " ", ""]
 
     def get_joined_len(doc_list, sep):
@@ -89,28 +78,19 @@ def create_chunks(pages, chunk_size=1000, overlap=200):
 
         return chunks
 
-    raw_chunks = _split_text(full_text, separators)
-
     result_chunks = []
-    for chunk_text, chunk_start in raw_chunks:
-        chunk_end = chunk_start + len(chunk_text)
+    
+    for p in pages:
+        page_text = p.get("text", "")
+        page_num = p.get("page_number", 1)
         
-        chunk_pages = []
-        for start, end, page_num in page_offsets:
-            if max(start, chunk_start) < min(end, chunk_end):
-                chunk_pages.append(page_num)
-                
-        if not chunk_pages:
-            for start, end, page_num in page_offsets:
-                if start <= chunk_start <= end:
-                    chunk_pages = [page_num]
-                    break
-            if not chunk_pages:
-                chunk_pages = [page_offsets[0][2]] if page_offsets else [1]
-                
-        result_chunks.append({
-            "text": chunk_text,
-            "page_numbers": sorted(list(set(chunk_pages)))
-        })
+        raw_chunks = _split_text(page_text, separators)
+        
+        for chunk_text, _ in raw_chunks:
+            if chunk_text.strip():
+                result_chunks.append({
+                    "text": chunk_text,
+                    "page_numbers": [page_num]
+                })
 
     return result_chunks

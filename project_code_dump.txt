@@ -232,7 +232,7 @@ CRITICAL INSTRUCTIONS:
 4. If the answer cannot be fully found in the context, or if the context is insufficient, reply exactly:
 "The answer is not available in the uploaded PDF."
 5. Do NOT say "Based on the context..." or "According to the provided document..." at the beginning. Just answer directly and include the citations.
-6. Pay extremely close attention to the structural layout of tables, lists, and forms. Do not assume, stretch, or propagate values (like degree names, dates, or marks) from one row or entry to another. Correctly map columns to their respective rows.
+6. Base your answers on explicit horizontal and vertical associations in tables, forms, and lists. Do not cross-associate or merge data from different rows, columns, or records. If a value (like a date, mark, address, or qualification) is associated with a specific entity or record, preserve that association exactly. Do not assume values are shared across multiple entries unless explicitly stated.
 
 Context:
 {context}
@@ -310,17 +310,6 @@ def create_chunks(pages, chunk_size=1000, overlap=200):
     if isinstance(pages, str):
         pages = [{"text": pages, "page_number": 1}]
 
-    full_text = ""
-    page_offsets = []
-
-    for p in pages:
-        page_text = p.get("text", "")
-        page_num = p.get("page_number", 1)
-        start_offset = len(full_text)
-        full_text += page_text + "\n"
-        end_offset = len(full_text)
-        page_offsets.append((start_offset, end_offset, page_num))
-
     separators = ["\n\n", "\n", ". ", " ", ""]
 
     def get_joined_len(doc_list, sep):
@@ -386,29 +375,20 @@ def create_chunks(pages, chunk_size=1000, overlap=200):
 
         return chunks
 
-    raw_chunks = _split_text(full_text, separators)
-
     result_chunks = []
-    for chunk_text, chunk_start in raw_chunks:
-        chunk_end = chunk_start + len(chunk_text)
+    
+    for p in pages:
+        page_text = p.get("text", "")
+        page_num = p.get("page_number", 1)
         
-        chunk_pages = []
-        for start, end, page_num in page_offsets:
-            if max(start, chunk_start) < min(end, chunk_end):
-                chunk_pages.append(page_num)
-                
-        if not chunk_pages:
-            for start, end, page_num in page_offsets:
-                if start <= chunk_start <= end:
-                    chunk_pages = [page_num]
-                    break
-            if not chunk_pages:
-                chunk_pages = [page_offsets[0][2]] if page_offsets else [1]
-                
-        result_chunks.append({
-            "text": chunk_text,
-            "page_numbers": sorted(list(set(chunk_pages)))
-        })
+        raw_chunks = _split_text(page_text, separators)
+        
+        for chunk_text, _ in raw_chunks:
+            if chunk_text.strip():
+                result_chunks.append({
+                    "text": chunk_text,
+                    "page_numbers": [page_num]
+                })
 
     return result_chunks
 
@@ -461,13 +441,114 @@ FILE: modules/pdf_loader.py
 import fitz
 
 
+def list_to_markdown_table(rows):
+    if not rows:
+        return ""
+    cleaned_rows = []
+    for row in rows:
+        cleaned_row = []
+        for cell in row:
+            if cell is None:
+                cleaned_row.append("")
+            else:
+                cleaned_row.append(cell.replace("\n", " ").strip())
+        cleaned_rows.append(cleaned_row)
+    header = cleaned_rows[0]
+    body = cleaned_rows[1:]
+    markdown = "| " + " | ".join(header) + " |\n"
+    markdown += "| " + " | ".join(["---"] * len(header)) + " |\n"
+    for row in body:
+        if len(row) < len(header):
+            row += [""] * (len(header) - len(row))
+        markdown += "| " + " | ".join(row[:len(header)]) + " |\n"
+    return markdown
+
+
+def parse_page_hybrid(page):
+    tables = page.find_tables()
+    table_list = []
+    
+    for tab in tables.tables:
+        extracted = tab.extract()
+        if not extracted:
+            continue
+            
+        valid_rows = []
+        spillover_text = ""
+        
+        for r_idx, row in enumerate(extracted):
+            non_empty = [c for c in row if c is not None and c.strip()]
+            
+            # Heuristic for spillover: if a row contains only 1 non-empty cell and it is long
+            if r_idx > 1 and len(non_empty) == 1:
+                val = non_empty[0]
+                if len(val) > 150 or val.count("\n") > 2:
+                    # Gather this row and all subsequent rows as spillover plain text
+                    spillover_parts = []
+                    for remaining_row in extracted[r_idx:]:
+                        rem_vals = [c for c in remaining_row if c is not None and c.strip()]
+                        if rem_vals:
+                            spillover_parts.extend(rem_vals)
+                    spillover_text = "\n".join(spillover_parts)
+                    break
+            
+            valid_rows.append(row)
+            
+        if valid_rows:
+            md_table = list_to_markdown_table(valid_rows)
+            table_list.append({
+                "bbox": tab.bbox,
+                "markdown": md_table,
+                "spillover": spillover_text,
+                "inserted": False
+            })
+            
+    blocks = page.get_text("blocks")
+    page_parts = []
+    
+    def get_overlap_ratio(bbox1, bbox2):
+        x0 = max(bbox1[0], bbox2[0])
+        y0 = max(bbox1[1], bbox2[1])
+        x1 = min(bbox1[2], bbox2[2])
+        y1 = min(bbox1[3], bbox2[3])
+        if x1 > x0 and y1 > y0:
+            overlap_area = (x1 - x0) * (y1 - y0)
+            block_area = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
+            if block_area <= 0:
+                return 0.0
+            return overlap_area / block_area
+        return 0.0
+
+    for block in blocks:
+        x0, y0, x1, y1, text, block_no, block_type = block
+        block_bbox = (x0, y0, x1, y1)
+        
+        overlap_table = None
+        for tab in table_list:
+            if get_overlap_ratio(block_bbox, tab["bbox"]) > 0.5:
+                overlap_table = tab
+                break
+                
+        if overlap_table:
+            if not overlap_table["inserted"]:
+                page_parts.append(overlap_table["markdown"])
+                if overlap_table["spillover"]:
+                    page_parts.append(overlap_table["spillover"])
+                overlap_table["inserted"] = True
+            continue
+            
+        page_parts.append(text)
+        
+    return "\n\n".join(page_parts)
+
+
 def extract_text(pdf_path):
     pages = []
 
     pdf_document = fitz.open(pdf_path)
 
     for page in pdf_document:
-        text = page.get_text(sort=True)
+        text = parse_page_hybrid(page)
         if text.strip():
             pages.append({
                 "text": text,
